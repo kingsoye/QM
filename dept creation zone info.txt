@@ -1,0 +1,558 @@
+-----------------------------START HERE---------------------------------
+---------------------------------Modified by Victor Akingunsoye  04/05/2022------------------------------------
+
+use vconnectmasterdwr
+--deptCreation--
+
+
+------------------Awaiting Confirmation Orders--------------------
+drop table if exists #awaitingconfirmation
+
+
+
+
+select distinct 'Awaiting Confirmation Orders' Category, o.contentid orderid,
+Stock_point_Name [FC/Hub],
+--(select stock_point_name from Stock_Point_Master where status=1)[FC/Hub],
+s.businessid, totalprice,orderstatusid, o.createddate ordercreateddate,null shipmentcreateddate, 
+'' shipmentid, null pickilist_createddate, '' picklistid, null DriverAssignedDate,'' driverid, '' drivername,null Statusdate, datediff(hour,o.createddate,getdate()) date_diff, 'Order Createddate till Now' diff_desc,
+o.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = o.townId and status=1)as  LCDA, ''zone ---*/Cityname and LCDA was added by Victor on 3Jun2022, ZONE added 19sep2022-----/*
+into #awaitingconfirmation
+from vconnectmasterpos..ordermaster o
+join StockoutLog s on s.orderid = o.contentid
+left outer join Stock_Point_Master sp on s.businessid = sp.stock_point_id
+where o.businessid in (select distinct Fulfilement_Center_ID from Stock_Point_Master)
+and orderstatusid=210
+and isnull(o.status,0)<>3
+and isnull(totalprice,0)>0  -----*/isnull(totalprice,0)>0 was added by Victor to exlude Totalprice lesser than Zero----/*
+and Warehouse_Type!=3   ----*/Warehouse_Type<>3  was added by Victor on 15JuN2022 to remove Depot Orders...../
+and OrderStatusID!=215  -----and OrderStatusID!=215 was added by Victor on 15Jun2022 to removed cancelled orders...../
+--and s.businessid IN (3525559,3438961,3608436,367400,3902422)
+
+
+------------------Orders missed by picklist generation system--------------------
+drop table if exists #missedorders
+drop table if exists #missedorderstage
+drop table if exists #orderconfirmed
+drop table if exists #missedstage2
+
+select * into #missedorderstage from (
+(select contentid from VconnectMasterPOS..ordermaster where convert(date,createddate,126) >= '2022-04-18' 
+and businessid in (select stock_point_id from stock_point_master where Fulfilement_Center_ID=76)
+--and orderstatusid <> 215 
+and ordersource <> 'RTO sales'
+--union 
+--select orderid from OrderPackageList where packagelistid in (
+--select shipmentid from depopickup)
+)
+
+except 
+
+select orderid from orderlistitem )d
+
+
+select * into #missedstage2 from VconnectMasterPOS..ordermaster where contentid in (select * from #missedorderstage)
+
+select a.createddate,b.orderid into #orderconfirmed from leadpipelinestagemaster a join leadpipelinedetails b on a.leadid=b.leadid and a.leadstageid=211 
+and a.contentid in (select max(contentid) from leadpipelinestagemaster l where l.leadid=a.leadid and l.leadstageid=211)
+and b.orderid in (select MasterOrderID from #missedstage2)
+
+select 'Orders Missed by PickList' Category, o.contentid orderid, Stock_point_Name [FC/Hub], o.businessid, totalprice,orderstatusid, o.createddate ordercreateddate,p.createddate shipmentcreateddate, 
+packagelistid shipmentid, ol.createddate pickilist_createddate, picklistid, DriverAssignedDate,driverid, '' drivername,'' Statusdate, datediff(hour,oc.createddate,getdate()) date_diff, 'Order Confirmation Date till Now' diff_desc,
+o.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = o.townId and status=1)as  LCDA, zm.ZoneName  ---*/Cityname and LCDA was added by Victor on 3Jun2022, ZONE added 19sep2022-----/*
+into #missedorders
+from VconnectMasterPOS..ordermaster o 
+left join orderpackagelist p on o.contentid=p.orderid and p.status = 1 
+left join orderlistitem l on o.contentid = l.orderid
+left join orderlist ol on l.orderlistid = ol.contentid
+left join #orderconfirmed oc on oc.OrderID = masterorderid
+left join orderliststatus os on ol.OrderListStatusId = os.contentid
+left outer join Stock_Point_Master sp on o.businessid = sp.stock_point_id
+left join ZoneMaster zm on ol.ZoneId=zm.ContentId  --Added by Victor 19SEP2022
+where o.contentid in (select contentid from #missedorderstage) and convert(date,o.createddate,126) >= '2022-04-18' 
+and OrderStatusID in (212)
+and isnull(totalprice,0)>0
+and sp.Warehouse_Type<>3    ---- and sp.Warehouse_Type<>3  was added by Victor on 15Jun2022 to remove depot orders...../
+and packagelistid is null   ---packagelistid is null   was added to exclude orders that have packagelistid....../
+and OrderStatusID!=215  -----and OrderStatusID!=215 was added by Victor on 15Jun2022 to removed cancelled orders...../
+--and Fulfilement_Center_ID = 76
+
+
+--select * from #missedorders
+
+
+
+-------------------Processing / Picklist generated but not picked---------------------
+drop table if exists #Processing
+
+select orderliststatus, o.Orderid, Stock_point_Name [FC/Hub], o.businessid, totalprice, orderstatusid, om.createddate ordercreateddate,p.createddate shipmentcreateddate, 
+packagelistid shipmentid, ol.createddate pickilist_createddate, ol.picklistid, DriverAssignedDate,driverid, '' drivername,os.createddate statusdate, datediff(hour,os.createddate,getdate()) date_diff, 'Picklist Processing till Now' diff_desc,
+om.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = om.townId and status=1)as  LCDA, zm.ZoneName  ---*/Cityname and LCDA was added by Victor on 3Jun2022, ZONE added 19sep2022-----/*
+into #Processing
+from orderlistitem o join orderlist ol on ol.contentid = o.orderlistid
+join OrderListStatusLog os on os.PickListId = ol.PickListId and isnull(os.OrderListStatusId,0) = 1 
+join VconnectMasterPOS..ordermaster om on om.contentid = o.orderid 
+left join OrderPackageList p on p.orderid =o.orderid and p.status = 1 
+left join orderliststatus oss on ol.OrderListStatusId = oss.contentid
+left join stock_point_master sp on sp.Stock_Point_ID = o.BusinessID
+left join ZoneMaster zm on p.ZoneId=zm.ContentId  --Added by Victor 19SEP2022
+
+where o.orderlistid in (select contentid from orderlist where isnull(OrderListStatusId,0) = 1 and status=1) and 
+os.contentid in (select max(contentid) from OrderListStatusLog where PickListId  = os.PickListId and isnull(os.OrderListStatusId,0) = 1) 
+and isnull(totalprice,0)>0 
+and sp.Warehouse_Type<>3   ----and sp.Warehouse_Type<>3  was added by Victor on 15JuN2022 to remove Depot Orders...../
+and OrderStatusID!=215  -----and OrderStatusID!=215 was added by Victor on 15Jun2022 to removed cancelled orders...../
+--and Fulfilement_Center_ID = 76
+
+
+-------------------Processed / Picklist generated but not picked---------------------
+drop table if exists #Processed
+
+select orderliststatus, o.Orderid, Stock_point_Name [FC/Hub], o.businessid, totalprice, orderstatusid, om.createddate ordercreateddate,p.createddate shipmentcreateddate, 
+packagelistid shipmentid, ol.createddate pickilist_createddate, ol.picklistid, DriverAssignedDate,driverid, '' drivername,os.createddate statusdate, datediff(hour,os.createddate,getdate()) date_diff, 'Picklist Processed till Now' diff_desc,
+om.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = om.townId and status=1)as  LCDA, zm.ZoneName  ---*/Cityname and LCDA was added by Victor on 3Jun2022, ZONE added 19sep2022-----/*
+into #Processed
+from orderlistitem o join orderlist ol on ol.contentid = o.orderlistid
+join OrderListStatusLog os on os.PickListId = ol.PickListId and isnull(os.OrderListStatusId,0) = 2 
+join VconnectMasterPOS..ordermaster om on om.contentid = o.orderid 
+left join OrderPackageList p on p.orderid =o.orderid and p.status = 1 
+left join orderliststatus oss on ol.OrderListStatusId = oss.contentid
+left join stock_point_master sp on sp.Stock_Point_ID = o.BusinessID
+left join ZoneMaster zm on ol.ZoneId=zm.ContentId --Added by Victor 19SEP2022
+where o.orderlistid in (select contentid from orderlist where isnull(OrderListStatusId,0) = 2 and status=1) 
+and isnull(totalprice,0)>0
+and sp.Warehouse_Type<>3   ----and sp.Warehouse_Type<>3  was added by Victor on 15JuN2022 to remove Depot Orders...../
+and OrderStatusID!=215  -----and OrderStatusID!=215 was added by Victor on 15Jun2022 to removed cancelled orders...../
+---and Fulfilement_Center_ID = 76
+
+
+
+-------------------Packaging / Picklist generated but not picked---------------------
+drop table if exists #Packaging
+
+
+select distinct orderliststatus, o.Orderid, Stock_point_Name [FC/Hub], o.businessid, totalprice, orderstatusid, om.createddate ordercreateddate,p.createddate shipmentcreateddate, 
+packagelistid shipmentid, ol.createddate pickilist_createddate, ol.picklistid, DriverAssignedDate,driverid, '' drivername, 
+(select max(aa.createddate) from orderliststatuslog aa where aa.picklistid=ol.picklistid and isnull(os.OrderListStatusId,0) = 3 ) statusdate,  ------------*/--- the maximum date was selected from orderlistststuslog to remove duplicates becauase at orderlistatusID 3 there are 3dates
+---modification was done on 14Jun2022 by Victor---
+datediff(hour, (select max(aa.createddate) from orderliststatuslog aa where aa.picklistid=ol.picklistid and isnull(os.OrderListStatusId,0) = 3 )
+,getdate()) date_diff, 'Picklist Packaging till Now' diff_desc,
+om.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = om.townId and status=1)as  LCDA, zm.ZoneName  ---*/Cityname and LCDA was added by Victor on 3Jun2022, ZONE added 19sep2022-----/*
+into #Packaging
+from orderlistitem o join orderlist ol on ol.contentid = o.orderlistid
+join OrderListStatusLog os on os.PickListId = ol.PickListId and isnull(os.OrderListStatusId,0) = 3 
+join VconnectMasterPOS..ordermaster om on om.contentid = o.orderid 
+left join OrderPackageList p on p.orderid =o.orderid and p.status = 1 
+left join orderliststatus oss on ol.OrderListStatusId = oss.contentid
+left join stock_point_master sp on sp.Stock_Point_ID = o.BusinessID
+left join ZoneMaster zm on ol.ZoneId=zm.ContentId  --Added by Victor 19SEP2022
+where o.orderlistid in (select contentid from orderlist where isnull(OrderListStatusId,0) = 3 and status=1) 
+and isnull(totalprice,0)>0  -----*/isnull(totalprice,0)>0 was added by Victor to exlude Totalprice lesser than Zero----/*
+and sp.Warehouse_Type<>3    ----and sp.Warehouse_Type<>3  was added by Victor on 15JuN2022 to remove Depot Orders...../
+and OrderStatusID!=215  -----and OrderStatusID!=215 was added by Victor on 15Jun2022 to removed cancelled orders...../
+
+--and Fulfilement_Center_ID = 76
+
+
+--select * from orderliststatus
+--order by createddate desc
+
+-----------------Packaged/ Picklist picked but not transferred---------------
+drop table if exists #Packaged
+
+
+select orderliststatus, o.Orderid, Stock_point_Name [FC/Hub], o.businessid, totalprice, orderstatusid, om.createddate ordercreateddate,p.createddate shipmentcreateddate, 
+packagelistid shipmentid, ol.createddate pickilist_createddate, ol.picklistid, DriverAssignedDate,driverid, '' drivername,os.createddate statusdate, datediff(hour,os.createddate,getdate()) date_diff, 'Order Packaged Date till Now' diff_desc,
+om.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = om.townId and status=1)as  LCDA, zm.ZoneName   ---*/Cityname and LCDA was added by Victor on 3Jun2022, ZONE added 19sep2022-----/*
+
+into #Packaged
+from orderlistitem o join orderlist ol on ol.contentid = o.orderlistid
+join OrderListStatusLog os on os.PickListId = ol.PickListId and isnull(os.OrderListStatusId,0) = 4 
+join VconnectMasterPOS..ordermaster om on om.contentid = o.orderid 
+left join OrderPackageList p on p.orderid =o.orderid and p.status = 1 
+left join orderliststatus oss on ol.OrderListStatusId = oss.contentid
+left join stock_point_master sp on sp.Stock_Point_ID = o.BusinessID
+left join ZoneMaster zm on ol.ZoneId=zm.ContentId  --Added by Victor 19SEP2022
+where o.orderlistid in (select contentid from orderlist where isnull(OrderListStatusId,0) = 4 and status=1) 
+and isnull(totalprice,0)>0   -----*/isnull(totalprice,0)>0 was added by Victor to exlude Totalprice lesser than Zero----/*
+and sp.Warehouse_Type<>3   ----*/sp.Warehouse_Type<>3  was added by Victor on 15JuN2022 to remove Depot Orders...../
+and OrderStatusID!=215  -----and OrderStatusID!=215 was added by Victor on 15Jun2022 to removed cancelled orders...../
+--and Fulfilement_Center_ID = 76
+
+
+-----------------Picklist Assigned To LineHaul Driver---------------
+drop table if exists #assignedtoLHdriver
+
+
+select orderliststatus, o.Orderid, Stock_point_Name [FC/Hub], o.businessid, totalprice, orderstatusid, om.createddate ordercreateddate,p.createddate shipmentcreateddate, 
+packagelistid shipmentid, ol.createddate pickilist_createddate, ol.picklistid, DriverAssignedDate,driverid, '' drivername,os.createddate statusdate, datediff(hour,os.createddate,getdate()) date_diff, 'Order Assigned To Line Haul Date till Now' diff_desc,
+om.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = om.townId and status=1)as  LCDA, zm.ZoneName ---*/Cityname and LCDA was added by Victor on 3Jun2022, ZONE added 19sep2022-----/*
+into #assignedtoLHdriver
+from orderlistitem o join orderlist ol on ol.contentid = o.orderlistid
+join OrderListStatusLog os on os.PickListId = ol.PickListId and isnull(os.OrderListStatusId,0) = 5 
+join VconnectMasterPOS..ordermaster om on om.contentid = o.orderid 
+left join OrderPackageList p on p.orderid =o.orderid and p.status = 1 
+left join orderliststatus oss on ol.OrderListStatusId = oss.contentid
+left join stock_point_master sp on sp.Stock_Point_ID = o.BusinessID
+left join ZoneMaster zm on ol.ZoneId=zm.ContentId --Added by Victor 19SEP2022
+where o.orderlistid in (select contentid from orderlist where isnull(OrderListStatusId,0) = 5 and status=1) 
+and isnull(totalprice,0)>0  -----*/isnull(totalprice,0)>0 wass added by Victor to exlude Totalprice lesser than Zero----/*
+and sp.Warehouse_Type<>3  --------*/sp.Warehouse_Type<>3  was added by Victor on 15JuN2022 to remove Depot Orders...../
+
+--and Fulfilement_Center_ID = 76
+
+
+-----------------Picklist Stock Transferring To Hub---------------
+drop table if exists #transferingtohub
+
+
+select orderliststatus, o.Orderid, Stock_point_Name [FC/Hub], o.businessid, totalprice, orderstatusid, om.createddate ordercreateddate,p.createddate shipmentcreateddate, 
+packagelistid shipmentid, ol.createddate pickilist_createddate, ol.picklistid, DriverAssignedDate,driverid, '' drivername,os.createddate statusdate, datediff(hour,os.createddate,getdate()) date_diff, 'Stock Transferring to Hub Date till Now' diff_desc,
+om.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = om.townId and status=1)as  LCDA, zm.ZoneName  ---*/Cityname and LCDA was added by Victor on 3Jun2022, ZONE added 19sep2022-----/*
+
+into #transferingtohub
+from orderlistitem o join orderlist ol on ol.contentid = o.orderlistid
+join OrderListStatusLog os on os.PickListId = ol.PickListId and isnull(os.OrderListStatusId,0) = 6 
+join VconnectMasterPOS..ordermaster om on om.contentid = o.orderid 
+left join OrderPackageList p on p.orderid =o.orderid and p.status = 1 
+left join orderliststatus oss on ol.OrderListStatusId = oss.contentid
+left join stock_point_master sp on sp.Stock_Point_ID = o.BusinessID
+left join ZoneMaster zm on ol.ZoneId=zm.ContentId --Added by Victor 19SEP2022
+where o.orderlistid in (select contentid from orderlist where isnull(OrderListStatusId,0) = 6 and status=1) 
+and isnull(totalprice,0)>0   -----*/isnull(totalprice,0)>0 wass added by Victor to exlude Totalprice lesser than Zero----/*
+and sp.Warehouse_Type<>3  ----*/sp.Warehouse_Type<>3  was added by Victor on 15JuN2022 to remove Depot Orders...../
+and p.ShipmentStatus <>8  -----*/p.ShipmentStatus <>8 was added to exclude closed shipment----
+and OrderStatusID!=215  -----and OrderStatusID!=215 was added by Victor on 15Jun2022 to removed cancelled orders...../
+--and Fulfilement_Center_ID = 76
+
+
+--select * from #picklistpickednottransfered
+
+-----------------Picklist stock Arrived at Hub---------------
+drop table if exists #stockarrivedhub
+
+
+drop table if exists #stockarrivedhub
+
+
+select distinct orderliststatus, o.Orderid, Stock_point_Name [FC/Hub], o.businessid, totalprice, orderstatusid, om.createddate ordercreateddate
+, null shipmentcreateddate, ''packagelistid ,
+ol.CreatedDate picklist_createddate, ol.picklistid , null DriverAssignedDate,'' driverid,'' drivername
+--(select top 1 agentname from businessuserrole b where b.userid = p.driverid and b.businessid = p.businessid) drivername
+, os.createddate statusdate, datediff(hour,om.createddate,getdate()) date_diff, 'Order Arrived Hub Date till Now' diff_desc,
+om.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = om.townId and status=1)as  LCDA, zm.ZoneName  ---*/Cityname and LCDA was added by Victor on 3Jun2022, ZONE added 19sep2022-----/*
+into #stockarrivedhub
+from orderlistitem o join OrderListStatusLog os on o.OrderListId = os.orderlistid
+and OrderListStatusId in (select max(orderliststatusid) from OrderListStatusLog x where x.OrderListId = o.OrderListId)
+join orderlist ol on os.PickListId = ol.PickListId
+join VconnectMasterPOS..ordermaster om on om.contentid = o.orderid --and o.orderid not in (select OrderId from orderpackagelist where  orderid = o.orderid and shipmentstatus in (5,6,7,8) and status = 1 )
+--left join OrderPackageList p on p.orderid =o.orderid and p.status = 1
+left join orderliststatus oss on ol.OrderListStatusId = oss.contentid
+left join stock_point_master sp on sp.Stock_Point_ID = o.BusinessID
+left join ZoneMaster zm on ol.ZoneId=zm.ContentId   --Added by Victor 19SEP2022
+where
+--o.orderlistid in (select contentid from orderlist where isnull(OrderListStatusId,0) = 7 and status=1) and
+--o.businessid=1646573 and
+isnull(os.OrderListStatusId,0) = 7 and o.status =1 and
+isnull(totalprice,0)>0
+and sp.Warehouse_Type<>3
+--and ShipmentStatus not in (5,6,7,8)
+
+--select * from #picklisttransferednotapproved
+
+-----------------Picklist Stock Approved By Hub---------------
+drop table if exists #stockapprovedold
+drop table if exists #shipmentdataapp
+
+select orderid, packagelistid into #shipmentdataapp from orderpackagelist where orderid in (
+select orderid from orderlistitem  o 
+where orderlistid in (select contentid from orderlist where isnull(OrderListStatusId,0) = 8 and status=1))
+and status = 1   ------Added new in Stock Approved by Hub by Victor on 08Jun2022---
+
+
+
+
+select orderliststatus, o.Orderid, Stock_point_Name [FC/Hub], o.businessid, totalprice, orderstatusid, om.createddate ordercreateddate,p.createddate shipmentcreateddate, 
+packagelistid shipmentid, ol.createddate pickilist_createddate, ol.picklistid , DriverAssignedDate,driverid, '' drivername, os.createddate Arriveddate, datediff(hour,os.createddate,getdate()) date_diff, 'Stock Approved Date till Now' diff_desc,
+om.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = om.townId and status=1)as  LCDA, zm.ZoneName  ---*/Cityname and LCDA was added by Victor on 3Jun2022, ZONE added 19sep2022-----/*
+into #stockapprovedold
+from orderlistitem o join orderlist ol on ol.contentid = o.orderlistid
+join OrderListStatusLog os on os.PickListId = ol.PickListId and isnull(os.OrderListStatusId,0) = 8
+join VconnectMasterPOS..ordermaster om on om.contentid = o.orderid 
+left join OrderPackageList p on p.orderid =o.orderid and p.status = 1 
+left join orderliststatus oss on ol.OrderListStatusId = oss.contentid
+left join stock_point_master sp on sp.Stock_Point_ID = o.BusinessID
+left join ZoneMaster zm on ol.ZoneId=zm.ContentId   --Added by Victor 19SEP2022
+where o.orderlistid in (select contentid from orderlist where isnull(OrderListStatusId,0) = 8 and status=1)
+and isnull(totalprice,0)>0   -----*/isnull(totalprice,0)>0 wass added by Victor to exlude Totalprice lesser than Zero----/*
+and sp.Warehouse_Type<>3  ----*/sp.Warehouse_Type<>3  was added by Victor on 15JuN2022 to remove Depot Orders...../
+and p.DriverID is not null
+and o.orderid in (select orderid from #shipmentdataapp)  -------*/orderid from #shipmentdataapp new in Stock Approved by Hub by Victor on 07Jun202----
+--and Fulfilement_Center_ID = 76
+and orderstatusid in (212)---this is to pick orders that are yet to be dispatched only
+and OrderStatusID!=215  -----and OrderStatusID!=215 was added by Victor on 15Jun2022 to removed cancelled orders...../
+
+
+
+-------------------Batch_creation_pending_orders-------------------
+--drop table if exists #batchcreationpending
+
+
+
+
+--select 'Batch Creation Pending Orders' Category, o.contentid orderid,Stock_point_Name [FC/Hub], o.businessid, totalprice,orderstatusid, o.createddate ordercreateddate,p.createddate shipmentcreateddate, 
+--packagelistid shipmentid, ol.createddate pickilist_createddate, ol.picklistid, DriverAssignedDate, driverid, '' drivername,null Statusdate, datediff(hour,os.createddate,getdate()) date_diff, 'Stock Approved Date till Now' diff_desc,
+--om.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = om.townId and status=1)as  LCDA  ---*/Cityname and LCDA was added by Victor on 3Jun2022, ZONE added 19sep2022-----/*
+--into #batchcreationpending
+--from orderlistitem o join orderlist ol on ol.contentid = o.orderlistid
+--join OrderListStatusLog os on os.PickListId = ol.PickListId and isnull(os.OrderListStatusId,0) = 8
+--join VconnectMasterPOS..ordermaster om on om.contentid = o.orderid 
+--left join OrderPackageList p on p.orderid =o.orderid and p.status = 1 
+--left join orderliststatus oss on ol.OrderListStatusId = oss.contentid
+--left join stock_point_master sp on sp.Stock_Point_ID = o.BusinessID
+--where o.businessid in (select stock_point_id from stock_point_master where status=1)
+--and orderstatusid in (212) ---to pick only ready for dispactch orders---
+--and isnull(o.status,0)<>3
+--and isnull(totalprice,0)<>0  -----*/isnull(totalprice,0)>0 wass added by Victor to exlude Totalprice lesser than Zero----/*
+--and sp.Warehouse_Type<>3  ----*/sp.Warehouse_Type<>3  was added by Victor on 15JuN2022 to remove Depot Orders...../
+--and o.orderid in (select orderid from #stockapprovedold)--Modified to o.orderid from o.contentid by Victor on 08Jun2022
+--and OrderStatusID!=215  -----and OrderStatusID!=215 was added by Victor on 15Jun2022 to removed cancelled orders...../
+
+
+
+----------------Stock received at hub, but shipment not created---------------------
+drop table if exists #shipmentdata
+drop table if exists #stockreceivedshipmentnotcreated
+
+select orderid, packagelistid into #shipmentdata from orderpackagelist where orderid in (
+select orderid from orderlistitem  o 
+where orderlistid in (select contentid from orderlist where isnull(OrderListStatusId,0) = 8 and status=1))
+and status = 1
+
+
+select 'Shipment Creation Pending Orders' Category, o.Orderid, Stock_point_Name [FC/Hub], o.businessid, totalprice, orderstatusid, om.createddate ordercreateddate,p.createddate shipmentcreateddate, 
+packagelistid shipmentid, ol.createddate pickilist_createddate, ol.picklistid,/*orderliststatus,*/ DriverAssignedDate,driverid, '' drivername,os.createddate StockApprovedDate, datediff(hour,os.createddate,getdate()) date_diff, 'Stock Approved Date till Now' diff_desc,
+om.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = om.townId and status=1)as  LCDA, zm.ZoneName ---*/Cityname and LCDA was added by Victor on 3Jun2022, ZONE added 19sep2022-----/*
+into #stockreceivedshipmentnotcreated
+from orderlistitem o join orderlist ol on ol.contentid = o.orderlistid
+join VconnectMasterPOS..ordermaster om on om.contentid = o.orderid 
+join OrderListStatusLog os on os.PickListId = ol.PickListId and isnull(os.OrderListStatusId,0) = 8
+left join OrderPackageList p on p.orderid =o.orderid and p.status = 1 
+left join stock_point_master sp on sp.Stock_Point_ID = o.BusinessID
+left join orderliststatus oss on ol.OrderListStatusId = oss.contentid
+left join ZoneMaster zm on ol.ZoneId=zm.ContentId   --Added by Victor 19SEP2022
+where o.orderlistid in (select contentid from orderlist where isnull(OrderListStatusId,0) = 8 and status=1) and 
+o.orderid not in (select orderid from #shipmentdata)
+and sp.Warehouse_Type<>3  ----*/sp.Warehouse_Type<>3  was added by Victor on 15JuN2022 to remove Depot Orders...../
+and OrderStatusID!=215  -----and OrderStatusID!=215 was added by Victor on 15Jun2022 to removed cancelled orders...../
+and  isnull(totalprice,0)>0 ---added by Victor to pick TP greater than zero
+--and Fulfilement_Center_ID = 76
+--and o.orderid IN (3525559,3438961,3608436,367400,3902422)
+
+--select * from #stockreceivedshipmentnotcreated
+
+--------------•	Shipment created at hub but not assigned to VSR-----------------
+drop table if exists #shipmentdata1
+drop table if exists #shipmentcreatedvsrnotassigned
+
+select orderid, packagelistid,driverid, driverassigneddate into #shipmentdata1 from orderpackagelist where orderid in (
+select orderid from orderlistitem  o 
+where orderlistid in (select contentid from orderlist where isnull(OrderListStatusId,0) = 8 and status=1))
+and status = 1 
+and driverassigneddate is null
+
+
+
+select distinct 'Shipment Created Not Assigned to VSR' Category, o.Orderid, Stock_point_Name [FC/Hub], o.businessid, totalprice, orderstatusid, om.createddate ordercreateddate,p.createddate shipmentcreateddate, 
+packagelistid shipmentid, ol.createddate pickilist_createddate, ol.picklistid,  DriverAssignedDate,driverid, '' drivername, os.createddate StockApprovedDate, datediff(hour,p.createddate,getdate()) date_diff, 'Shipment Createddate till Now' diff_desc,
+om.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = om.townId and status=1)as  LCDA, zm.ZoneName ---*/Cityname and LCDA was added by Victor on 3Jun2022, ZONE added 19sep2022-----/*
+into #shipmentcreatedvsrnotassigned
+from orderlistitem o join orderlist ol on ol.contentid = o.orderlistid
+join VconnectMasterPOS..ordermaster om on om.contentid = o.orderid 
+join OrderListStatusLog os on os.PickListId = ol.PickListId and isnull(os.OrderListStatusId,0) = 8
+left join orderliststatus oss on ol.OrderListStatusId = oss.contentid
+left join OrderPackageList p on p.orderid =o.orderid and p.status = 1 
+left join stock_point_master sp on sp.Stock_Point_ID = o.BusinessID
+left join ZoneMaster zm on ol.ZoneId=zm.ContentId   --Added by Victor 19SEP2022
+where o.orderlistid in (select contentid from orderlist where isnull(OrderListStatusId,0) = 8 and status=1) and 
+o.orderid in (select orderid from #shipmentdata1)
+and isnull(totalprice,0)>0  -----*/isnull(totalprice,0)>0 was added by Victor to exlude Totalprice lesser than Zero----/*
+and sp.Warehouse_Type<>3  ----*/sp.Warehouse_Type<>3  was added by Victor on 15JuN2022 to remove Depot Orders...../
+and p.DriverID is null -------*/ p.driverid is null was added by Victor on 10Jun2022 to exclude orders with driver added.../*
+and OrderStatusID!=215  -----and OrderStatusID!=215 was added by Victor on 15Jun2022 to removed cancelled orders...../
+--and Fulfilement_Center_ID = 76
+order by 2
+
+drop table if exists #stockapproved
+
+select * into #stockapproved from #stockapprovedold where shipmentid not in (select shipmentid from #shipmentcreatedvsrnotassigned)
+ --------*/ shipmentid not in #shipmentcreatedvsrnotassigned was added to remove duplicate coming at stock approve by hun and shipment created but not asigned to VSR.../*
+
+--select * from #shipmentcreatedvsrnotassigned
+
+
+-------------•	Shipment assigned to VSR, but trip not started.---------------
+drop table if exists #shipmentdata2
+drop table if exists #tripdata
+drop table if exists #shipmentassignedvsrtripnotstarted
+
+
+select orderid, packagelistid,driverid, driverassigneddate into #shipmentdata2 from orderpackagelist where orderid in (
+select orderid from orderlistitem  o where orderlistid in (select contentid from orderlist where isnull(OrderListStatusId,0) = 8 and status=1))
+and status = 1 and isnull(driverid,0)<>0 and driverassigneddate is not null
+
+
+select shipmentid,TripStartDate,TripEndDate,status, DriverId into #tripdata from ShipmentTripMaster where shipmentid in (select distinct packagelistid from #shipmentdata2)
+
+select 'Shipment Assigned to VSR Trip Not Started' Category, o.Orderid, Stock_point_Name [FC/Hub], o.businessid, totalprice, orderstatusid, om.createddate ordercreateddate,p.createddate shipmentcreateddate, 
+packagelistid shipmentid, ol.createddate pickilist_createddate, ol.picklistid,  DriverAssignedDate, driverid, (select top 1 agentname from businessuserrole b where b.userid = p.driverid and b.businessid = p.businessid)as  DriverName, 
+os.createddate StockApprovedDate, datediff(hour,DriverAssignedDate,getdate()) date_diff, 'Driver Assigned Date till Now' diff_desc,
+om.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = om.townId and status=1)as  LCDA, zm.ZoneName  ---*/Cityname and LCDA was added by Victor on 3Jun2022, ZONE added 19sep2022-----/*
+into #shipmentassignedvsrtripnotstarted
+from orderlistitem o join orderlist ol on ol.contentid = o.orderlistid
+join VconnectMasterPOS..ordermaster om on om.contentid = o.orderid 
+join OrderListStatusLog os on os.PickListId = ol.PickListId and isnull(os.OrderListStatusId,0) = 8
+left join orderliststatus oss on ol.OrderListStatusId = oss.contentid
+left join OrderPackageList p on p.orderid =o.orderid and p.status = 1 
+left join stock_point_master sp on sp.Stock_Point_ID = o.BusinessID
+left join ZoneMaster zm on ol.ZoneId=zm.ContentId   --Added by Victor 19SEP2022
+where o.orderid in (select orderid from #shipmentdata2 where packagelistid not in (select shipmentid from #tripdata))
+and isnull(totalprice,0)>0  -----*/isnull(totalprice,0)>0 wass added by Victor to exlude Totalprice lesser than Zero----/*
+and sp.Warehouse_Type<>3  ----*/sp.Warehouse_Type<>3  was added by Victor on 15JuN2022 to remove Depot Orders...../
+and driverid is not null  ---------*/ driverid is not null was added by Victor on 3Jun2022 to exclude orders without driverid.../* 
+and OrderStatusID!=215  -----and OrderStatusID!=215 was added by Victor on 15Jun2022 to removed cancelled orders...../
+--and Fulfilement_Center_ID = 76
+
+
+-------------------------Delivery/RTO Pending-------------------------
+
+drop table if exists #deliveryrtopending
+
+
+
+select distinct  'Delivery/RTO Pending' Category, o.Orderid, Stock_point_Name [FC/Hub], o.businessid, totalprice, orderstatusid, om.createddate ordercreateddate,p.createddate shipmentcreateddate, 
+packagelistid shipmentid, ol.createddate pickilist_createddate, ol.picklistid,  DriverAssignedDate, p.driverid, (select top 1 agentname from businessuserrole b where b.userid = p.driverid and b.businessid = p.businessid)as  DriverName, 
+(select distinct max(tripstartdate) from #tripdata) StatusDate,  --------*/ the max date was taken from #tripdata to exclude duplicates added by Victor on 14JuN2022.../*
+datediff(hour,TripStartDate,getdate()) date_diff, 'Shipment Trip Start Date till Now' diff_desc,
+om.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = om.townId and status=1)as  LCDA, zm.ZoneName ---*/Cityname and LCDA was added by Victor on 3Jun2022, ZONE added 19sep2022-----/*
+into #deliveryrtopending
+from orderlistitem o join orderlist ol on ol.contentid = o.orderlistid
+join VconnectMasterPOS..ordermaster om on om.contentid = o.orderid 
+join OrderListStatusLog os on os.PickListId = ol.PickListId and isnull(os.OrderListStatusId,0) = 8
+left join orderliststatus oss on ol.OrderListStatusId = oss.contentid
+left join OrderPackageList p on p.orderid =o.orderid and p.status = 1 
+left join #tripdata t on t.ShipmentId = p.PackageListID
+left join stock_point_master sp on sp.Stock_Point_ID = o.BusinessID
+left join ZoneMaster zm on ol.ZoneId=zm.ContentId   --Added by Victor 19SEP2022
+where o.orderid in (select orderid from #shipmentdata2 where packagelistid in (select shipmentid from #tripdata where status=1 and ISNULL(TripEndDate,'')=''))
+and OrderStatusID in (213)--not in (214,216,219,225)---to pick only dispatched orders---
+and isnull(totalprice,0)>0   -----*/isnull(totalprice,0)>0 wass added by Victor to exlude Totalprice lesser than Zero----/*
+and sp.Warehouse_Type<>3-------*/sp.Warehouse_Type<>3  was added by Victor on 15JuN2022 to remove Depot Orders...../
+and t.status=1 -----------*/ t.status=1 was added by Victor on 3Jun2022 to exclude orders without driverid.../* 
+and OrderStatusID!=215  -----and OrderStatusID!=215 was added by Victor on 15Jun2022 to removed cancelled orders...../
+
+
+
+
+
+----------------------Reco Pending---------------------
+
+drop table if exists #recopending
+
+select distinct 'Reconciliation Pending' Category, o.Orderid, Stock_point_Name [FC/Hub], o.businessid, totalprice, orderstatusid, om.createddate ordercreateddate,p.createddate shipmentcreateddate, 
+packagelistid shipmentid,ol.createddate pickilist_createddate, 
+ol.picklistid, DriverAssignedDate, p.driverid, (select top 1 agentname from businessuserrole b where b.userid = p.driverid and b.businessid = p.businessid)as  DriverName, 
+TripEndDate Statusdate, datediff(hour,TripEndDate,getdate()) date_diff, 'Shipment Trip End Date till Now' diff_desc,
+om.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = om.townId and status=1)as  LCDA, zm.ZoneName ---*/Cityname and LCDA was added by Victor on 3Jun2022, ZONE added 19sep2022-----/*
+into #recopending
+from orderlistitem o join orderlist ol on ol.contentid = o.orderlistid
+join VconnectMasterPOS..ordermaster om on om.contentid = o.orderid 
+join OrderListStatusLog os on os.PickListId = ol.PickListId and isnull(os.OrderListStatusId,0) = 8
+left join orderliststatus oss on ol.OrderListStatusId = oss.contentid
+left join OrderPackageList p on p.orderid =o.orderid and p.status = 1 
+left join #tripdata t on t.ShipmentId = p.PackageListID
+left join stock_point_master sp on sp.Stock_Point_ID = o.BusinessID
+left join ZoneMaster zm on ol.ZoneId=zm.ContentId   --Added by Victor 19SEP2022
+where o.orderid in (select orderid from #shipmentdata2 where packagelistid in (select shipmentid from #tripdata where status=2 and ISNULL(TripEndDate,'')<>'')
+					or PackageListID in (select distinct ShipmentListId from ReconcilationMaster rm where status=0) )
+and OrderStatusID in (214,216,219,225)
+and ShipmentStatus in (5,6)
+and isnull(totalprice,0)>0  -----*/isnull(totalprice,0)>0 was added by Victor to exlude Totalprice lesser than Zero----/*
+and sp.Warehouse_Type<>3  ----*/sp.Warehouse_Type<>3  was added by Victor on 15JuN2022 to remove Depot Orders...../
+and TripEndDate is not null   --------*/TripEndDate is not null was added by Victor on 14Jun2022 to exclude orders without Tripenddate...*/
+and OrderStatusID!=215  -----OrderStatusID!=215 was added by Victor on 15Jun2022 to removed cancelled orders...../
+and ol.StateId is not null -----was added by Victor on 14JuN to pick orders with stateId----
+--and Fulfilement_Center_ID = 76
+
+
+--select * from shipmentstatusmaster
+
+
+--select * from #shipmentassignedvsrtripnotstarted
+
+----------------APPEND ALL------------------
+drop table if exists #alldata
+
+
+SELECT * INTO #alldata from (
+select 1 SORT, * from #awaitingconfirmation
+union all
+select 2 SORT, * from #missedorders
+union all
+select 3 SORT, * from #Processing
+union all
+select 4 SORT, * from #Processed
+union all
+select 5 SORT, * from #Packaging
+union all
+select 6 SORT, * from #Packaged
+union all
+select 7 SORT, * from #assignedtoLHdriver
+union all
+select 8 SORT, * from #transferingtohub
+union all
+select 9 SORT, * from #stockarrivedhub
+union all
+select 10 SORT, * from #stockapproved
+--union all
+--select 11 SORT, * from #batchcreationpending
+union all
+select 12 SORT, * from #stockreceivedshipmentnotcreated
+union all
+select 13 SORT, * from #shipmentcreatedvsrnotassigned
+union all
+select 14 SORT, * from #shipmentassignedvsrtripnotstarted
+union all
+select 15 SORT, * from #deliveryrtopending
+union all
+select 16 SORT, * from #recopending)xx
+
+
+select *, case 
+when date_diff < 1 then '1. < 1Hr'
+when date_diff >=1 and date_diff < 3 then '2. 1Hr - 3Hrs'
+when date_diff >=3 and date_diff < 6 then '3. 3Hrs - 6Hrs'
+when date_diff >=6 and date_diff < 12 then '4. 6Hrs - 12Hrs'
+when date_diff >=12 and date_diff < 24 then '5. 12Hrs - 24Hrs'
+when date_diff >=24 and date_diff < 48 then '6. 24Hrs - 48Hrs'
+when date_diff >=48 then '7. > 48Hrs' end datebucket,
+(select top 1 bc.countryname from businessmaster ab
+join countrymaster bc on bc.contentid = ab.countryid
+join stock_point_master cd on cd.stock_point_id = businessid) as country
+into #report1
+from #alldata
+--where businessid not in (select stock_point_id from stock_point_master where Warehouse_Type = 3)
+
+select  * from #report1 
+--where orderid IN (3525559,3438961,3608436,367400,3902422)
+
+
+--select Category,count(orderid), orderid from #report1
+--group by Category,orderid having count(orderid) > 1
+----select category,count(orderid), orderid from #report2 group by orderid,category having count(orderid) >1
+
+
+
+
+
+

@@ -1,0 +1,470 @@
+-----------------------------START HERE---------------------------------
+---------------------------------Modified by Victor Akingunsoye  04/05/2022------------------------------------
+
+use vconnectmasterdwr
+
+------------------Awaiting Confirmation Orders--------------------
+drop table if exists #awaitingconfirmation
+
+select distinct 'Awaiting Confirmation Orders' Category, o.contentid orderid,Stock_point_Name [FC/Hub], s.businessid, totalprice,orderstatusid, o.createddate ordercreateddate,null shipmentcreateddate, 
+'' shipmentid, null pickilist_createddate, '' picklistid, null DriverAssignedDate,'' driverid, '' drivername,null Statusdate, datediff(hour,o.createddate,getdate()) date_diff, 'Order Createddate till Now' diff_desc,
+o.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = o.townId and status=1)as  LCDA
+into #awaitingconfirmation
+from vconnectmasterpos..ordermaster o
+join StockoutLog s on s.orderid = o.contentid
+left outer join Stock_Point_Master sp on s.businessid = sp.stock_point_id
+where o.businessid in (select distinct Fulfilement_Center_ID from Stock_Point_Master)
+and orderstatusid=210
+and isnull(o.status,0)<>3
+and isnull(totalprice,0)>0
+
+
+
+
+
+------------------Orders missed by picklist generation system--------------------
+drop table if exists #missedorders
+drop table if exists #missedorderstage
+drop table if exists #orderconfirmed
+drop table if exists #missedstage2
+
+select * into #missedorderstage from (
+(select contentid from VconnectMasterPOS..ordermaster where convert(date,createddate,126) >= '2022-04-18' 
+and businessid in (select stock_point_id from stock_point_master where Fulfilement_Center_ID=76)
+and orderstatusid <> 215 and ordersource <> 'RTO sales'
+--union 
+--select orderid from OrderPackageList where packagelistid in (
+--select shipmentid from depopickup)
+)
+
+except 
+
+select orderid from orderlistitem )d
+
+
+select * into #missedstage2 from VconnectMasterPOS..ordermaster where contentid in (select * from #missedorderstage)
+
+select a.createddate,b.orderid into #orderconfirmed from leadpipelinestagemaster a join leadpipelinedetails b on a.leadid=b.leadid and a.leadstageid=211 
+and a.contentid in (select max(contentid) from leadpipelinestagemaster l where l.leadid=a.leadid and l.leadstageid=211)
+and b.orderid in (select MasterOrderID from #missedstage2)
+
+select 'Orders Missed by PickList' Category, o.contentid orderid, Stock_point_Name [FC/Hub], o.businessid, totalprice,orderstatusid, o.createddate ordercreateddate,p.createddate shipmentcreateddate, 
+packagelistid shipmentid, ol.createddate pickilist_createddate, picklistid, DriverAssignedDate,driverid, '' drivername,'' Statusdate, datediff(hour,oc.createddate,getdate()) date_diff, 'Order Confirmation Date till Now' diff_desc,
+o.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = o.townId and status=1)as  LCDA
+into #missedorders
+from VconnectMasterPOS..ordermaster o 
+left join orderpackagelist p on o.contentid=p.orderid and p.status = 1 
+left join orderlistitem l on o.contentid = l.orderid
+left join orderlist ol on l.orderlistid = ol.contentid
+left join #orderconfirmed oc on oc.OrderID = masterorderid
+left join orderliststatus os on ol.OrderListStatusId = os.contentid
+left outer join Stock_Point_Master sp on o.businessid = sp.stock_point_id
+where o.contentid in (select contentid from #missedorderstage) and convert(date,o.createddate,126) >= '2022-04-18' 
+and OrderStatusID in (212)
+and isnull(totalprice,0)>0
+and sp.Warehouse_Type<>3
+and packagelistid is null
+--and Fulfilement_Center_ID = 76
+
+
+--select * from #missedorders
+
+-------------------Processing / Picklist generated but not picked---------------------
+drop table if exists #Processing
+
+select orderliststatus, o.Orderid, Stock_point_Name [FC/Hub], o.businessid, totalprice, orderstatusid, om.createddate ordercreateddate,p.createddate shipmentcreateddate, 
+packagelistid shipmentid, ol.createddate pickilist_createddate, ol.picklistid, DriverAssignedDate,driverid, '' drivername,os.createddate statusdate, datediff(hour,om.createddate,getdate()) date_diff, 'Picklist Processing till Now' diff_desc,
+om.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = om.townId and status=1)as  LCDA
+into #Processing
+from orderlistitem o join orderlist ol on ol.contentid = o.orderlistid
+join OrderListStatusLog os on os.PickListId = ol.PickListId and isnull(os.OrderListStatusId,0) = 1 
+join VconnectMasterPOS..ordermaster om on om.contentid = o.orderid 
+left join OrderPackageList p on p.orderid =o.orderid and p.status = 1 
+left join orderliststatus oss on ol.OrderListStatusId = oss.contentid
+left join stock_point_master sp on sp.Stock_Point_ID = o.BusinessID
+where o.orderlistid in (select contentid from orderlist where isnull(OrderListStatusId,0) = 1 and status=1) and 
+os.contentid in (select max(contentid) from OrderListStatusLog where PickListId  = os.PickListId and isnull(os.OrderListStatusId,0) = 1) 
+and isnull(totalprice,0)>0
+and sp.Warehouse_Type<>3
+--and Fulfilement_Center_ID = 76
+
+
+--select * from OrderListStatusLog where isnull(OrderListStatusId,0) = 5 order by Createddate desc, 3
+-------------------Processed / Picklist generated but not picked---------------------
+drop table if exists #Processed
+
+select orderliststatus, o.Orderid, Stock_point_Name [FC/Hub], o.businessid, totalprice, orderstatusid, om.createddate ordercreateddate,p.createddate shipmentcreateddate, 
+packagelistid shipmentid, ol.createddate pickilist_createddate, ol.picklistid, DriverAssignedDate,driverid, '' drivername,os.createddate statusdate, datediff(hour,om.createddate,getdate()) date_diff, 'Picklist Processed till Now' diff_desc,
+om.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = om.townId and status=1)as  LCDA
+into #Processed
+from orderlistitem o join orderlist ol on ol.contentid = o.orderlistid
+join OrderListStatusLog os on os.PickListId = ol.PickListId and isnull(os.OrderListStatusId,0) = 2 
+join VconnectMasterPOS..ordermaster om on om.contentid = o.orderid 
+left join OrderPackageList p on p.orderid =o.orderid and p.status = 1 
+left join orderliststatus oss on ol.OrderListStatusId = oss.contentid
+left join stock_point_master sp on sp.Stock_Point_ID = o.BusinessID
+where o.orderlistid in (select contentid from orderlist where isnull(OrderListStatusId,0) = 2 and status=1) 
+and isnull(totalprice,0)>0
+and sp.Warehouse_Type<>3
+---and Fulfilement_Center_ID = 76
+
+
+
+-------------------Packaging / Picklist generated but not picked---------------------
+drop table if exists #Packaging
+
+select orderliststatus, o.Orderid, Stock_point_Name [FC/Hub], o.businessid, totalprice, orderstatusid, om.createddate ordercreateddate,p.createddate shipmentcreateddate, 
+packagelistid shipmentid, ol.createddate pickilist_createddate, ol.picklistid, DriverAssignedDate,driverid, '' drivername,os.createddate statusdate, datediff(hour,om.createddate,getdate()) date_diff, 'Picklist Packaging till Now' diff_desc,
+om.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = om.townId and status=1)as  LCDA
+into #Packaging
+from orderlistitem o join orderlist ol on ol.contentid = o.orderlistid
+join OrderListStatusLog os on os.PickListId = ol.PickListId and isnull(os.OrderListStatusId,0) = 3 
+join VconnectMasterPOS..ordermaster om on om.contentid = o.orderid 
+left join OrderPackageList p on p.orderid =o.orderid and p.status = 1 
+left join orderliststatus oss on ol.OrderListStatusId = oss.contentid
+left join stock_point_master sp on sp.Stock_Point_ID = o.BusinessID
+where o.orderlistid in (select contentid from orderlist where isnull(OrderListStatusId,0) = 3 and status=1) 
+and isnull(totalprice,0)>0
+and sp.Warehouse_Type<>3
+--and Fulfilement_Center_ID = 76
+
+
+--select * from orderliststatus
+--order by createddate desc
+
+-----------------Packaged/ Picklist picked but not transferred---------------
+drop table if exists #Packaged
+
+select orderliststatus, o.Orderid, Stock_point_Name [FC/Hub], o.businessid, totalprice, orderstatusid, om.createddate ordercreateddate,p.createddate shipmentcreateddate, 
+packagelistid shipmentid, ol.createddate pickilist_createddate, ol.picklistid, DriverAssignedDate,driverid, '' drivername,os.createddate statusdate, datediff(hour,om.createddate,getdate()) date_diff, 'Order Packaged Date till Now' diff_desc,
+om.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = om.townId and status=1)as  LCDA
+into #Packaged
+from orderlistitem o join orderlist ol on ol.contentid = o.orderlistid
+join OrderListStatusLog os on os.PickListId = ol.PickListId and isnull(os.OrderListStatusId,0) = 4 
+join VconnectMasterPOS..ordermaster om on om.contentid = o.orderid 
+left join OrderPackageList p on p.orderid =o.orderid and p.status = 1 
+left join orderliststatus oss on ol.OrderListStatusId = oss.contentid
+left join stock_point_master sp on sp.Stock_Point_ID = o.BusinessID
+where o.orderlistid in (select contentid from orderlist where isnull(OrderListStatusId,0) = 4 and status=1) 
+and isnull(totalprice,0)>0
+and sp.Warehouse_Type<>3
+--and Fulfilement_Center_ID = 76
+
+
+-----------------Picklist Assigned To LineHaul Driver---------------
+drop table if exists #assignedtoLHdriver
+
+select orderliststatus, o.Orderid, Stock_point_Name [FC/Hub], o.businessid, totalprice, orderstatusid, om.createddate ordercreateddate,p.createddate shipmentcreateddate, 
+packagelistid shipmentid, ol.createddate pickilist_createddate, ol.picklistid, DriverAssignedDate,driverid, '' drivername,os.createddate statusdate, datediff(hour,om.createddate,getdate()) date_diff, 'Order Assigned To Line Haul Date till Now' diff_desc,
+om.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = om.townId and status=1)as  LCDA
+into #assignedtoLHdriver
+from orderlistitem o join orderlist ol on ol.contentid = o.orderlistid
+join OrderListStatusLog os on os.PickListId = ol.PickListId and isnull(os.OrderListStatusId,0) = 5 
+join VconnectMasterPOS..ordermaster om on om.contentid = o.orderid 
+left join OrderPackageList p on p.orderid =o.orderid and p.status = 1 
+left join orderliststatus oss on ol.OrderListStatusId = oss.contentid
+left join stock_point_master sp on sp.Stock_Point_ID = o.BusinessID
+where o.orderlistid in (select contentid from orderlist where isnull(OrderListStatusId,0) = 5 and status=1) 
+and isnull(totalprice,0)>0
+and sp.Warehouse_Type<>3
+--and Fulfilement_Center_ID = 76
+
+
+-----------------Picklist Stock Transferring To Hub---------------
+drop table if exists #transferingtohub
+
+select orderliststatus, o.Orderid, Stock_point_Name [FC/Hub], o.businessid, totalprice, orderstatusid, om.createddate ordercreateddate,p.createddate shipmentcreateddate, 
+packagelistid shipmentid, ol.createddate pickilist_createddate, ol.picklistid, DriverAssignedDate,driverid, '' drivername,os.createddate statusdate, datediff(hour,om.createddate,getdate()) date_diff, 'Stock Transferring to Hub Date till Now' diff_desc,
+om.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = om.townId and status=1)as  LCDA
+into #transferingtohub
+from orderlistitem o join orderlist ol on ol.contentid = o.orderlistid
+join OrderListStatusLog os on os.PickListId = ol.PickListId and isnull(os.OrderListStatusId,0) = 6 
+join VconnectMasterPOS..ordermaster om on om.contentid = o.orderid 
+left join OrderPackageList p on p.orderid =o.orderid and p.status = 1 
+left join orderliststatus oss on ol.OrderListStatusId = oss.contentid
+left join stock_point_master sp on sp.Stock_Point_ID = o.BusinessID
+where o.orderlistid in (select contentid from orderlist where isnull(OrderListStatusId,0) = 6 and status=1) 
+and isnull(totalprice,0)>0
+and sp.Warehouse_Type<>3
+and p.ShipmentStatus <>8
+--and Fulfilement_Center_ID = 76
+
+
+--select * from #picklistpickednottransfered
+--select * from OrderListStatusLog where isnull(OrderListStatusId,0) = 4 
+--select * from OrderList where isnull(OrderListStatusId,0) = 7
+
+-----------------Picklist stock Arrived at Hub---------------
+drop table if exists #stockarrivedhub
+
+select orderliststatus, o.Orderid, Stock_point_Name [FC/Hub], o.businessid, totalprice, orderstatusid, om.createddate ordercreateddate,p.createddate shipmentcreateddate, 
+packagelistid shipmentid, ol.createddate pickilist_createddate, ol.picklistid , DriverAssignedDate,driverid, (select top 1 agentname from businessuserrole b where b.userid = p.driverid and b.businessid = p.businessid) drivername, os.createddate Arriveddate, datediff(hour,om.createddate,getdate()) date_diff, 'Order Arrived Hub Date till Now' diff_desc,
+om.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = om.townId and status=1)as  LCDA
+into #stockarrivedhub
+from orderlistitem o join orderlist ol on ol.contentid = o.orderlistid
+join OrderListStatusLog os on os.PickListId = ol.PickListId and isnull(os.OrderListStatusId,0) = 7
+join VconnectMasterPOS..ordermaster om on om.contentid = o.orderid 
+left join OrderPackageList p on p.orderid =o.orderid and p.status = 1 
+left join orderliststatus oss on ol.OrderListStatusId = oss.contentid
+left join stock_point_master sp on sp.Stock_Point_ID = o.BusinessID
+where o.orderlistid in (select contentid from orderlist where isnull(OrderListStatusId,0) = 7 and status=1)
+and isnull(totalprice,0)>0
+and sp.Warehouse_Type<>3
+and ShipmentStatus not in (5,6,7,8)
+--and Fulfilement_Center_ID = 76
+
+--select * from #stockarrivedhub where shipmentid ='PKNO19-632382'
+--select * from orderlistitem
+
+--select * from #picklisttransferednotapproved
+
+-----------------Picklist Stock Approved By Hub---------------
+drop table if exists #stockapproved
+----added by Victor 6/8/2022----
+select orderid, packagelistid into #shipmentdataapp from orderpackagelist where orderid in (
+select orderid from orderlistitem  o 
+where orderlistid in (select contentid from orderlist where isnull(OrderListStatusId,0) = 8 and status=1))
+and status = 1
+
+
+select orderliststatus, o.Orderid, Stock_point_Name [FC/Hub], o.businessid, totalprice, orderstatusid, om.createddate ordercreateddate,p.createddate shipmentcreateddate, 
+packagelistid shipmentid, ol.createddate pickilist_createddate, ol.picklistid , DriverAssignedDate,driverid, '' drivername, os.createddate Arriveddate, datediff(hour,om.createddate,getdate()) date_diff, 'Stock Approved Date till Now' diff_desc,
+om.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = om.townId and status=1)as  LCDA
+into #stockapproved
+from orderlistitem o join orderlist ol on ol.contentid = o.orderlistid
+join OrderListStatusLog os on os.PickListId = ol.PickListId and isnull(os.OrderListStatusId,0) = 8
+join VconnectMasterPOS..ordermaster om on om.contentid = o.orderid 
+left join OrderPackageList p on p.orderid =o.orderid and p.status = 1 
+left join orderliststatus oss on ol.OrderListStatusId = oss.contentid
+left join stock_point_master sp on sp.Stock_Point_ID = o.BusinessID
+where o.orderlistid in (select contentid from orderlist where isnull(OrderListStatusId,0) = 8 and status=1)
+and isnull(totalprice,0)>0
+and sp.Warehouse_Type<>3
+--and Fulfilement_Center_ID = 76
+--and orderstatusid not in (214,216,219,225)
+and orderstatusid in (212)---this is to pick orders that are yet to be dispatched only
+and o.orderid in (select orderid from #shipmentdataapp) --Added new in Stock Approved by Hub by shyama on 07Jun2022  ---added by Victor 6/8/2022-----
+and o.orderid not in (select OrderID from OrderBatchMaster b where b.BusinessID=o.BusinessID and b.status=1)
+
+--select * from orderlist where isnull(OrderListStatusId,0) = 8 
+
+
+-----------------Batch_creation_pending_orders-------------------
+drop table if exists #batchcreationpending
+
+select 'Batch Creation Pending Orders' Category, o.contentid orderid,Stock_point_Name [FC/Hub], o.businessid, totalprice,orderstatusid, o.createddate ordercreateddate,p.createddate shipmentcreateddate, 
+packagelistid shipmentid, ol.createddate pickilist_createddate, ol.picklistid, DriverAssignedDate, driverid, '' drivername,null Statusdate, datediff(hour,om.createddate,getdate()) date_diff, 'Stock Approved Date till Now' diff_desc,
+om.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = om.townId and status=1)as  LCDA
+into #batchcreationpending
+from orderlistitem o join orderlist ol on ol.contentid = o.orderlistid
+join OrderListStatusLog os on os.PickListId = ol.PickListId and isnull(os.OrderListStatusId,0) = 8
+join VconnectMasterPOS..ordermaster om on om.contentid = o.orderid 
+left join OrderPackageList p on p.orderid =o.orderid and p.status = 1 
+left join orderliststatus oss on ol.OrderListStatusId = oss.contentid
+left join stock_point_master sp on sp.Stock_Point_ID = o.BusinessID
+where o.businessid in (select stock_point_id from stock_point_master where status=1)
+and orderstatusid in (212)
+and isnull(o.status,0)<>3
+and isnull(totalprice,0)<>0
+and o.OrderId in (select orderid from #stockapproved)
+and o.OrderId not in (select OrderID from OrderBatchMaster b where b.BusinessID=o.BusinessID and b.status=1) ----modified o.contendid changed to o.orderid---
+and isnull(totalprice,0)>0
+and sp.Warehouse_Type<>3
+
+
+----------------Stock received at hub, but shipment not created---------------------
+drop table if exists #shipmentdata
+drop table if exists #stockreceivedshipmentnotcreated
+
+select orderid, packagelistid into #shipmentdata from orderpackagelist where orderid in (
+select orderid from orderlistitem  o 
+where orderlistid in (select contentid from orderlist where isnull(OrderListStatusId,0) = 8 and status=1))
+and status = 1
+
+select 'Shipment Creation Pending Orders' Category, o.Orderid, Stock_point_Name [FC/Hub], o.businessid, totalprice, orderstatusid, om.createddate ordercreateddate,p.createddate shipmentcreateddate, 
+packagelistid shipmentid, ol.createddate pickilist_createddate, ol.picklistid,/*orderliststatus,*/ DriverAssignedDate,driverid, '' drivername,os.createddate StockApprovedDate, datediff(hour,om.createddate,getdate()) date_diff, 'Stock Approved Date till Now' diff_desc,
+om.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = om.townId and status=1)as  LCDA
+into #stockreceivedshipmentnotcreated
+from orderlistitem o join orderlist ol on ol.contentid = o.orderlistid
+join VconnectMasterPOS..ordermaster om on om.contentid = o.orderid 
+join OrderListStatusLog os on os.PickListId = ol.PickListId and isnull(os.OrderListStatusId,0) = 8
+left join OrderPackageList p on p.orderid =o.orderid and p.status = 1 
+left join stock_point_master sp on sp.Stock_Point_ID = o.BusinessID
+left join orderliststatus oss on ol.OrderListStatusId = oss.contentid
+where o.orderlistid in (select contentid from orderlist where isnull(OrderListStatusId,0) = 8 and status=1) and 
+o.orderid not in (select orderid from #shipmentdata)
+and isnull(totalprice,0)>0
+and sp.Warehouse_Type<>3
+--and Fulfilement_Center_ID = 76
+
+--select * from #stockreceivedshipmentnotcreated
+
+
+--------------•	Shipment created at hub but not assigned to VSR-----------------
+drop table if exists #shipmentdata1
+drop table if exists #shipmentcreatedvsrnotassigned
+
+select orderid, packagelistid,driverid, driverassigneddate into #shipmentdata1 from orderpackagelist where orderid in (
+select orderid from orderlistitem  o 
+where orderlistid in (select contentid from orderlist where isnull(OrderListStatusId,0) = 8 and status=1))
+and status = 1 
+and driverassigneddate is null
+
+
+select 'Shipment Created Not Assigned to VSR' Category, o.Orderid, Stock_point_Name [FC/Hub], o.businessid, totalprice, orderstatusid, om.createddate ordercreateddate,p.createddate shipmentcreateddate, 
+packagelistid shipmentid, ol.createddate pickilist_createddate, ol.picklistid,  DriverAssignedDate,driverid, '' drivername, os.createddate StockApprovedDate, datediff(hour,om.createddate,getdate()) date_diff, 'Shipment Createddate till Now' diff_desc,
+om.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = om.townId and status=1)as  LCDA
+into #shipmentcreatedvsrnotassigned
+from orderlistitem o join orderlist ol on ol.contentid = o.orderlistid
+join VconnectMasterPOS..ordermaster om on om.contentid = o.orderid 
+join OrderListStatusLog os on os.PickListId = ol.PickListId and isnull(os.OrderListStatusId,0) = 8
+left join orderliststatus oss on ol.OrderListStatusId = oss.contentid
+left join OrderPackageList p on p.orderid =o.orderid and p.status = 1 
+left join stock_point_master sp on sp.Stock_Point_ID = o.BusinessID
+where o.orderlistid in (select contentid from orderlist where isnull(OrderListStatusId,0) = 8 and status=1) and 
+o.orderid in (select orderid from #shipmentdata1)
+and isnull(totalprice,0)>0
+and sp.Warehouse_Type<>3
+--and Fulfilement_Center_ID = 76
+order by 2
+
+--select * from #shipmentcreatedvsrnotassigned
+
+-------------•	Shipment assigned to VSR, but trip not started.---------------
+drop table if exists #shipmentdata2
+drop table if exists #tripdata
+drop table if exists #shipmentassignedvsrtripnotstarted
+
+select orderid, packagelistid,driverid, driverassigneddate into #shipmentdata2 from orderpackagelist where orderid in (
+select orderid from orderlistitem  o where orderlistid in (select contentid from orderlist where isnull(OrderListStatusId,0) = 8 and status=1))
+and status = 1 and isnull(driverid,0)<>0 and driverassigneddate is not null
+
+
+select shipmentid,TripStartDate,TripEndDate,status, DriverId into #tripdata from ShipmentTripMaster where shipmentid in (select distinct packagelistid from #shipmentdata2)
+
+select 'Shipment Assigned to VSR Trip Not Started' Category, o.Orderid, Stock_point_Name [FC/Hub], o.businessid, totalprice, orderstatusid, om.createddate ordercreateddate,p.createddate shipmentcreateddate, 
+packagelistid shipmentid, ol.createddate pickilist_createddate, ol.picklistid,  DriverAssignedDate, driverid, (select top 1 agentname from businessuserrole b where b.userid = p.driverid and b.businessid = p.businessid)as  DriverName, 
+os.createddate StockApprovedDate, datediff(hour,DriverAssignedDate,getdate()) date_diff, 'Driver Assigned Date till Now' diff_desc,
+om.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = om.townId and status=1)as  LCDA
+into #shipmentassignedvsrtripnotstarted
+from orderlistitem o join orderlist ol on ol.contentid = o.orderlistid
+join VconnectMasterPOS..ordermaster om on om.contentid = o.orderid 
+join OrderListStatusLog os on os.PickListId = ol.PickListId and isnull(os.OrderListStatusId,0) = 8
+left join orderliststatus oss on ol.OrderListStatusId = oss.contentid
+left join OrderPackageList p on p.orderid =o.orderid and p.status = 1 
+left join stock_point_master sp on sp.Stock_Point_ID = o.BusinessID
+where o.orderid in (select orderid from #shipmentdata2 where packagelistid not in (select shipmentid from #tripdata))
+and isnull(totalprice,0)>0
+and sp.Warehouse_Type<>3
+--and Fulfilement_Center_ID = 76
+
+
+
+-------------------------Delivery/RTO Pending-------------------------
+
+drop table if exists #deliveryrtopending
+
+
+select 'Delivery/RTO Pending' Category, o.Orderid, Stock_point_Name [FC/Hub], o.businessid, totalprice, orderstatusid, om.createddate ordercreateddate,p.createddate shipmentcreateddate, 
+packagelistid shipmentid, ol.createddate pickilist_createddate, ol.picklistid,  DriverAssignedDate, p.driverid, (select top 1 agentname from businessuserrole b where b.userid = p.driverid and b.businessid = p.businessid)as  DriverName, 
+TripStartDate Statusdate, datediff(hour,TripStartDate,getdate()) date_diff, 'Shipment Trip Start Date till Now' diff_desc,
+om.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = om.townId and status=1)as  LCDA
+into #deliveryrtopending
+from orderlistitem o join orderlist ol on ol.contentid = o.orderlistid
+join VconnectMasterPOS..ordermaster om on om.contentid = o.orderid 
+join OrderListStatusLog os on os.PickListId = ol.PickListId and isnull(os.OrderListStatusId,0) = 8
+left join orderliststatus oss on ol.OrderListStatusId = oss.contentid
+left join OrderPackageList p on p.orderid =o.orderid and p.status = 1 
+left join #tripdata t on t.ShipmentId = p.PackageListID
+left join stock_point_master sp on sp.Stock_Point_ID = o.BusinessID
+where o.orderid in (select orderid from #shipmentdata2 where packagelistid in (select shipmentid from #tripdata where status=1 and ISNULL(TripEndDate,'')=''))
+and OrderStatusID in (213)--not in (214,216,219,225)
+and isnull(totalprice,0)>0
+and sp.Warehouse_Type<>3
+--and Fulfilement_Center_ID = 76
+
+
+
+----------------------Reco Pending---------------------
+
+drop table if exists #recopending
+
+
+select 'Reconciliation Pending' Category, o.Orderid, Stock_point_Name [FC/Hub], o.businessid, totalprice, orderstatusid, om.createddate ordercreateddate,p.createddate shipmentcreateddate, 
+packagelistid shipmentid, ol.createddate pickilist_createddate, ol.picklistid,  DriverAssignedDate, p.driverid, (select top 1 agentname from businessuserrole b where b.userid = p.driverid and b.businessid = p.businessid)as  DriverName, 
+TripEndDate Statusdate, datediff(hour,TripEndDate,getdate()) date_diff, 'Shipment Trip End Date till Now' diff_desc,
+om.CITYNAME  LGA,(select top 1 TownName from Townmaster z where z.Contentid = om.townId and status=1)as  LCDA
+into #recopending
+from orderlistitem o join orderlist ol on ol.contentid = o.orderlistid
+join VconnectMasterPOS..ordermaster om on om.contentid = o.orderid 
+join OrderListStatusLog os on os.PickListId = ol.PickListId and isnull(os.OrderListStatusId,0) = 8
+left join orderliststatus oss on ol.OrderListStatusId = oss.contentid
+left join OrderPackageList p on p.orderid =o.orderid and p.status = 1 
+left join #tripdata t on t.ShipmentId = p.PackageListID
+left join stock_point_master sp on sp.Stock_Point_ID = o.BusinessID
+where o.orderid in (select orderid from #shipmentdata2 where packagelistid in (select shipmentid from #tripdata where status=2 and ISNULL(TripEndDate,'')<>'')
+					or PackageListID in (select distinct ShipmentListId from ReconcilationMaster rm where status=0) )
+and OrderStatusID in (214,216,219,225)
+and ShipmentStatus in (5,6)
+and isnull(totalprice,0)>0
+and sp.Warehouse_Type<>3
+--and Fulfilement_Center_ID = 76
+
+
+
+--select * from #shipmentassignedvsrtripnotstarted
+--8211
+----------------APPEND ALL------------------
+drop table if exists #alldata
+
+
+SELECT * INTO #alldata from (
+select 1 SORT, * from #awaitingconfirmation
+union all
+select 2 SORT, * from #missedorders
+union all
+select 3 SORT, * from #Processing
+union all
+select 4 SORT, * from #Processed
+union all
+select 5 SORT, * from #Packaging
+union all
+select 6 SORT, * from #Packaged
+union all
+select 7 SORT, * from #assignedtoLHdriver
+union all
+select 8 SORT, * from #transferingtohub
+union all
+select 9 SORT, * from #stockarrivedhub
+union all
+select 10 SORT, * from #stockapproved
+union all
+select 11 SORT, * from #batchcreationpending
+union all
+select 12 SORT, * from #stockreceivedshipmentnotcreated
+union all
+select 13 SORT, * from #shipmentcreatedvsrnotassigned
+union all
+select 14 SORT, * from #shipmentassignedvsrtripnotstarted
+union all
+select 15 SORT, * from #deliveryrtopending
+union all
+select 16 SORT, * from #recopending)xx
+
+
+select *, case 
+when date_diff < 1 then '1. < 1Hr'
+when date_diff >=1 and date_diff < 3 then '2. 1Hr - 3Hrs'
+when date_diff >=3 and date_diff < 6 then '3. 3Hrs - 6Hrs'
+when date_diff >=6 and date_diff < 12 then '4. 6Hrs - 12Hrs'
+when date_diff >=12 and date_diff < 24 then '5. 12Hrs - 24Hrs'
+when date_diff >=24 and date_diff < 48 then '6. 24Hrs - 48Hrs'
+when date_diff >=48 then '7. > 48Hrs' end datebucket,
+(select top 1 bc.countryname from businessmaster ab
+join countrymaster bc on bc.contentid = ab.countryid
+join stock_point_master cd on cd.stock_point_id = businessid) as country
+into #report
+from #alldata
+--where businessid not in (select stock_point_id from stock_point_master where Warehouse_Type = 3)
+
+select * from #report
